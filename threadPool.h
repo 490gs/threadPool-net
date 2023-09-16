@@ -92,7 +92,8 @@ private:
 
 
 public:
-	threadPool(const unsigned int numThreads = 8) :threads(std::vector<std::thread>(numThreads)), isShutdown(false) {}
+	threadPool(const unsigned int numThreads = std::thread::hardware_concurrency()) 
+		:threads(std::vector<std::thread>(numThreads)), isShutdown(false) {}
 	threadPool(const threadPool&) = delete;
 	threadPool(threadPool&&) = delete;
 	threadPool& operator=(const threadPool&) = delete;
