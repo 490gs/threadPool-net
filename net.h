@@ -1,5 +1,6 @@
 #pragma once
-# define _WINSOCK_DEPRECATED_NO_WARNINGS
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
 #include<winsock.h>
 #include<iostream>
 #pragma comment(lib,"ws2_32.lib")
@@ -19,7 +20,14 @@ private:
 	std::atomic<unsigned int>numCurrentClient;
 	threadPool tp;
 	std::vector<SOCKET>socketOfClient;
-	std::vector<char*> contents;
+	//µÇÈë½×¶Î£»
+	std::vector<std::string>userName;
+	std::vector<int>step;
+	//Í¨ÐÅ½×¶Î£»
+	std::vector<char*> recvBuffer;
+	std::vector<char*> sendBuffer;
+	std::vector<unsigned int>sendIndex;
+	std::vector<int>recvLength;
 	std::vector<std::shared_ptr<std::mutex>>contentsMutex;
 	std::vector<std::shared_ptr<std::condition_variable>>contentsCv;
 	std::thread conCli;
@@ -28,7 +36,9 @@ private:
 public:
 	netServer(unsigned long port, unsigned int numListen)
 		:numClient(numListen), numCurrentClient(0), tp(numListen * 2), conCli([this]() {this->connectClient(); }),
-		socketOfClient(numListen), contents(numListen), contentsMutex(numListen), contentsCv(numListen)
+		socketOfClient(numListen), userName(numListen), step(numListen),
+		recvBuffer(numListen),sendBuffer(numListen),sendIndex(numListen),
+		recvLength(numListen), contentsMutex(numListen), contentsCv(numListen)
 	{
 		int success;
 		WSADATA wsaData;
@@ -75,7 +85,11 @@ public:
 		}
 		for (unsigned int i = 0; i < numClient; ++i)
 		{
-			contents[i] = new(char[100]);
+			step[i] = 0;
+			recvBuffer[i] = new(char[MSG_LENGTH]);
+			sendBuffer[i] = new(char[MSG_LENGTH]);
+			sendIndex[i] = -1;
+			recvLength[i] = 0;
 			contentsMutex[i] = std::make_shared<std::mutex>();
 			contentsCv[i] = std::make_shared<std::condition_variable>();
 		}
@@ -90,7 +104,10 @@ public:
 		this->conCli.join();
 		this->tp.shutdown();
 		for (unsigned int i = 0; i < this->numClient; ++i)
-			delete[] this->contents[i];
+		{
+			delete[] this->recvBuffer[i];
+			delete[] this->sendBuffer[i];
+		}
 	}
 
 	void connectClient()
@@ -107,7 +124,7 @@ public:
 			{
 				std::unique_lock<std::mutex>lock(mutexForPrint);
 				std::cout << "new client: " << this->socketOfClient[numCurrentClient] << '\n';
-				std::cout << "current num: " << numCurrentClient << '\n';
+				std::cout << "current num: " << numCurrentClient+1 << '\n';
 				unsigned int index = numCurrentClient.load();
 				this->tp.submit([this,index]() {this->recvClient(index); });
 				this->tp.submit([this,index]() {this->sendClient(index); });
@@ -125,21 +142,108 @@ public:
 	{
 		{
 			std::unique_lock<std::mutex>lock(mutexForPrint);
-			std::cout << "index: " << index << "...\n";
-			std::cout << "start recv from: " << this->socketOfClient[index] << "...\n";
+			std::cout << " start recv from: " << this->socketOfClient[index] << "; index: " << index << "...\n";
 		}
-		while (true)
+		std::string info;
+		unsigned int toIndex=0;
+		int num=0;
+		int indexInt=0;
+		while(true)
 		{
-			unsigned int toIndex = index;
-			std::unique_lock<std::mutex>lock(*(this->contentsMutex[toIndex]));
-			int recvLen = recv(this->socketOfClient[toIndex], this->contents[toIndex], MSG_LENGTH, 0);
-			if (recvLen != -1)
 			{
-				this->contentsCv[toIndex]->notify_one();
+				std::unique_lock<std::mutex>lock(*(this->contentsMutex[index]));
+				while (this->step[index] == 0)
 				{
-					std::unique_lock<std::mutex>lock(mutexForPrint);
-					std::cout << "recv from: " << this->socketOfClient[index] << "...";
-					std::cout << this->contents[toIndex];
+				// step0: send msg: enter name;
+				this->contentsCv[index]->wait(lock, [this, index]() {return sendIndex[index] == -1; });
+				strcpy_s(this->sendBuffer[index], MSG_LENGTH, "Sys: welcome, enter your name:");
+				send(this->socketOfClient[index], this->sendBuffer[index], MSG_LENGTH, 0);
+				this->contentsCv[index]->notify_all();
+
+					// step1: recv msg: name;
+					this->recvLength[index] = recv(this->socketOfClient[index], this->recvBuffer[index], MSG_LENGTH, 0);
+					if (this->recvLength[index] > 0 && strlen(this->recvBuffer[index]) > 1)
+					{
+						int len = strlen(this->recvBuffer[index]);
+						this->recvBuffer[index][len - 1] = '\0';
+						this->userName[index] = this->recvBuffer[index];
+						this->step[index] = 2;
+						{
+							std::unique_lock<std::mutex>lock(mutexForPrint);
+							std::cout <<index<< " username: " << this->userName[index] << "...\n";
+						}
+					}
+					else
+					{
+						this->step[index] = 0;
+					}
+				}
+				// step2: send msg: select chater;
+				while (this->step[index] == 2)
+				{
+					info="Sys: current users as follow:\n";
+					unsigned int num = this->numCurrentClient;
+					for (unsigned int i = 0; i < num; ++i)
+					{
+						info = info + (char)(i + '0') + ':' + this->userName[i] + '\n';
+					}
+					info = info + "please select one number:\n";
+
+					this->contentsCv[index]->wait(lock, [this, index]() {return sendIndex[index] == -1; });
+					strcpy_s(this->sendBuffer[index], MSG_LENGTH, info.c_str());
+					send(this->socketOfClient[index], this->sendBuffer[index], MSG_LENGTH, 0);
+					this->contentsCv[index]->notify_all();
+					// step3: recv msg: chater selected;
+					this->recvLength[index] = recv(this->socketOfClient[index], this->recvBuffer[index], MSG_LENGTH, 0);
+					if (this->recvLength[index] > 0 && strlen(this->recvBuffer[index]) == 2 && this->recvBuffer[index][1] == '\n')
+					{
+						indexInt = (int)(this->recvBuffer[index][0] - '0');
+						if (indexInt >= 0 && indexInt < num)
+						{
+							this->recvLength[index] = 0;
+							toIndex = indexInt;
+							std::cout << this->userName[index] << " choosed " << this->userName[toIndex] << ".\n";
+							strcpy_s(this->recvBuffer[index], MSG_LENGTH, this->userName[toIndex].c_str());
+							this->step[index] = 4;
+						}
+						else
+						{
+							this->step[index] = 2;
+						}
+					}
+					else
+					{
+						this->step[index] = 2;
+					}
+
+				}
+				
+				info = " start chat with ";
+				info = info + this->userName[toIndex];
+				info = info + ":...\n";
+
+				this->contentsCv[index]->wait(lock, [this, index]() {return sendIndex[index] == -1; });
+				strcpy_s(this->sendBuffer[index], MSG_LENGTH, info.c_str());
+				send(this->socketOfClient[index], this->sendBuffer[index], MSG_LENGTH, 0);
+				this->contentsCv[index]->notify_all();
+			}
+
+			while (true)
+			{
+				this->recvLength[index] = recv(this->socketOfClient[index], this->recvBuffer[index], MSG_LENGTH, 0);
+				if (this->recvLength[toIndex] > 0)
+				{
+					std::unique_lock<std::mutex>lock(*(this->contentsMutex[toIndex]));
+					this->contentsCv[toIndex]->wait(lock, [this, toIndex]() {return sendIndex[toIndex] == -1; });
+					{
+						std::unique_lock<std::mutex>lock(mutexForPrint);
+						std::cout << "[recv] from: " << this->userName[index] << ":...";
+						std::cout << this->recvBuffer[index];
+					}
+					info = "[from "+this->userName[index]+"]: "+ this->recvBuffer[index];
+					strcpy_s(this->sendBuffer[toIndex], this->recvLength[index], info.c_str());
+					this->sendIndex[toIndex] = index;
+					this->contentsCv[toIndex]->notify_all();
 				}
 			}
 		}
@@ -148,15 +252,56 @@ public:
 	{
 		{
 			std::unique_lock<std::mutex>lock(mutexForPrint);
-			std::cout << "index: " << index << "...\n";
-			std::cout << "start send to: " << this->socketOfClient[index] << "...\n";
+			std::cout << " start send to: " << this->socketOfClient[index] << "; index: " << index << "...\n";
 		}
-		while (true)
+		std::string info;
+		int sendSuccess=-1;
+		int fromIndex = -1;
+		while(true)
 		{
-			std::unique_lock<std::mutex>lock(*(this->contentsMutex[index]));
-			this->contentsCv[index]->wait(lock);
-			std::cout << "send " << this->socketOfClient[index] << "...\n";
-			send(this->socketOfClient[index], this->contents[index], MSG_LENGTH + 1, 0);
+			while (true)
+			{
+				{
+					{
+						std::unique_lock<std::mutex>lock(*(this->contentsMutex[index]));
+						this->contentsCv[index]->wait(lock, [this, index]() {return sendIndex[index] != -1; });
+						fromIndex = this->sendIndex[index];
+						if (fromIndex != -2)
+						{
+							info = this->userName[fromIndex] + " :";
+							{
+								std::unique_lock<std::mutex>lock(mutexForPrint);
+								std::cout << "[send] from: " << info << " to: " << this->userName[index] << ":...";
+								std::cout << this->sendBuffer[index];
+							}
+							sendSuccess = send(this->socketOfClient[index], this->sendBuffer[index], this->recvLength[fromIndex], 0);
+							this->sendIndex[index] = -1;
+							this->contentsCv[index]->notify_all();
+						}
+						else
+						{
+							sendSuccess = send(this->socketOfClient[index], this->sendBuffer[index], MSG_LENGTH, 0);
+							{
+								std::unique_lock<std::mutex>lock(mutexForPrint);
+								std::cout << "[send] from: Sys  to: " << this->userName[index] << ":...";
+								std::cout << this->sendBuffer[index];
+							}
+							this->sendIndex[index] = -1;
+							this->contentsCv[index]->notify_all();
+							continue;
+						}
+					}
+					if (sendSuccess != -1&&fromIndex!=-1)
+						info = " [Sys: to " + this->userName[index] + " success!]";
+					else
+						info = " [Sys: to " + this->userName[index] + " failed!]";
+					std::unique_lock<std::mutex>subLock(*(this->contentsMutex[fromIndex]));
+					this->contentsCv[index]->wait(subLock, [this, fromIndex]() {return sendIndex[fromIndex] == -1; });
+					strcpy_s(this->sendBuffer[fromIndex], MSG_LENGTH, info.c_str());
+					this->sendIndex[fromIndex] = -2;
+					this->contentsCv[fromIndex]->notify_all();
+				}
+			}
 		}
 	}
 };
@@ -167,11 +312,14 @@ private:
 	SOCKET clientSocket;
 	char sendBuffer[MSG_LENGTH];
 	char recvBuffer[MSG_LENGTH];
+	std::mutex startSubThreadMutex;
+	std::atomic<bool> isStartSubThread;
+	std::condition_variable startSubThreadCv;
 	std::thread recvThread;
 	std::thread sendThread;
 public:
 	netClient(const char* serverIp, unsigned long port) 
-		:recvThread([this]() {this->recvServer(); }), sendThread([this]() {this->sendServer(); })
+		:isStartSubThread(false), recvThread([this]() {this->recvServer(); }), sendThread([this]() {this->sendServer(); })
 	{
 		WSADATA wsaData;
 		int error = WSAStartup(MAKEWORD(2, 2), &wsaData);
@@ -180,7 +328,6 @@ public:
 			std::unique_lock<std::mutex>lock(mutexForPrint);
 			std::cout << "init fail.\n";
 		}
-		std::cout << error;
 		clientSocket = socket(AF_INET, SOCK_STREAM, 0);
 		SOCKADDR_IN clientAddr;
 		clientAddr.sin_addr.S_un.S_addr = inet_addr(serverIp);
@@ -197,6 +344,8 @@ public:
 			std::unique_lock<std::mutex>lock(mutexForPrint);
 			std::cout << "connect success.\n";
 		}
+		startSubThreadCv.notify_all();
+
 	}
 	netClient(const netClient&) = delete;
 	netClient(netClient&&) = delete;
@@ -210,7 +359,8 @@ public:
 	void recvServer()
 	{
 		{
-			std::unique_lock<std::mutex>lock(mutexForPrint);
+			std::unique_lock<std::mutex>lock(this->startSubThreadMutex);
+			this->startSubThreadCv.wait(lock);
 			std::cout << "recv from server...\n";
 		}
 		while (true)
@@ -219,20 +369,21 @@ public:
 			if (recvLength != -1)
 			{
 				std::unique_lock<std::mutex>lock(mutexForPrint);
-				std::cout << recvBuffer;
+				std::cout << this->recvBuffer << std::endl;
 			}
 		}
 	}
 	void sendServer()
 	{
 		{
-			std::unique_lock<std::mutex>lock(mutexForPrint);
+			std::unique_lock<std::mutex>lock(this->startSubThreadMutex);
+			this->startSubThreadCv.wait(lock);
 			std::cout << "send to server...\n";
 		}
 		while (true)
 		{
 			fgets(sendBuffer, sizeof(sendBuffer), stdin);
-			send(this->clientSocket, this->sendBuffer, MSG_LENGTH + 1, 0);
+			send(this->clientSocket, this->sendBuffer, MSG_LENGTH, 0);
 		}
 	}
 };
