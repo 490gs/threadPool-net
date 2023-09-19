@@ -210,7 +210,7 @@ public:
 					info="Sys: current users as follow:\n";
 					for (unsigned int i = 0; i < maxNumClient; ++i)
 					{
-						if (this->step[i] != 0 && this->step[i] != 5)
+						if (this->step[i] != -1 && this->step[i] != 0 && this->step[i] != 5)
 							info = info + (char)(i + '0') + ':' + this->userName[i] + '\n';
 					}
 					info = info + "please select one number:\n";
@@ -224,7 +224,7 @@ public:
 					if (this->recvLength[index] > 0 && strlen(this->recvBuffer[index]) == 2 && this->recvBuffer[index][1] == '\n')//!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!超过9个人需要改这里的判定条件。
 					{
 						indexInt = (int)(this->recvBuffer[index][0] - '0');
-						if (indexInt >= 0 && indexInt < this->maxNumClient && this->step[indexInt] != 0 && this->step[indexInt] != 5)
+						if (indexInt >= 0 && indexInt < this->maxNumClient && this->step[indexInt] != -1&& this->step[indexInt] != 0 && this->step[indexInt] != 5)
 						{
 							this->recvLength[index] = 0;
 							toIndex = indexInt;
@@ -285,7 +285,7 @@ public:
 					{
 						{
 							std::unique_lock<std::mutex>lock(mutexForPrint);
-							std::cout << "[change] from: " << this->userName[index] << info<< ":...\n";
+							std::cout << "[change] from: " << this->userName[index] << ":...\n";
 						}
 						this->step[index] = 2;
 						break;
@@ -296,8 +296,8 @@ public:
 						break;
 					}
 					std::unique_lock<std::mutex>lock(*(this->contentsMutex[toIndex]));
-					this->contentsCv[toIndex]->wait(lock, [this, toIndex]() {return sendIndex[toIndex] == -1 || step[toIndex] == 5 || step[toIndex] == 0; });
-					if (this->step[toIndex] == 5 || this->step[toIndex] == 0)
+					this->contentsCv[toIndex]->wait(lock, [this, toIndex]() {return sendIndex[toIndex] == -1 || step[toIndex] == 5 || step[toIndex] == 0 || step[toIndex] == -1; });
+					if (this->step[toIndex] == 5 || this->step[toIndex] == 0 || this->step[toIndex] == -1)
 					{
 						{
 							std::unique_lock<std::mutex>lock(mutexForPrint);
@@ -469,7 +469,8 @@ public:
 			if (recvLength == -1)
 			{
 				std::unique_lock<std::mutex>lock(mutexForPrint);
-				std::cout << "error!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n";
+				std::cout << "error!\n";
+				break;
 			}
 		}
 		{
@@ -505,7 +506,8 @@ public:
 			if (sendLength == -1)
 			{
 				std::unique_lock<std::mutex>lock(mutexForPrint);
-				std::cout << "error!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n";
+				std::cout << "error!\n";
+				break;
 			}
 		}
 		{
